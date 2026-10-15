@@ -1,0 +1,598 @@
+#pragma once
+#include "pch.h"
+#include "InputManager.h"
+#include "Registry.h"
+#include "Shellcode.h"
+#include "structs.h"
+#include "DmaScheduler.h"
+
+#include <atomic>
+#include <array>
+#include <chrono>
+#include <optional>
+#include <type_traits>
+#include <limits>
+#include <thread>
+#include <mutex>
+#include <source_location>
+#include <span>
+#include <string_view>
+
+struct MemoryTrafficStats
+{
+    // Lifetime totals since construction or ResetTrafficStats()
+    uint64_t readOperations = 0;          // Direct reads + scatter execute-read batches.
+    uint64_t writeOperations = 0;         // Direct writes + scatter execute-write batches.
+
+    uint64_t readSuccesses = 0;
+    uint64_t writeSuccesses = 0;
+
+    uint64_t readFailures = 0;
+    uint64_t writeFailures = 0;
+
+    uint64_t readRequests = 0;
+    uint64_t writeRequests = 0;
+
+    uint64_t readBytesRequested = 0;
+    uint64_t writeBytesRequested = 0;
+
+    uint64_t directReadBytesReturned = 0;
+
+    uint64_t scatterReadBatches = 0;
+    uint64_t scatterWriteBatches = 0;
+
+    uint64_t scatterReadRequests = 0;
+    uint64_t scatterWriteRequests = 0;
+
+    uint64_t scatterClearFailures = 0;
+
+    double sampleWindowSeconds = 0.0;
+
+    double readOperationsPerSecond = 0.0;
+    double writeOperationsPerSecond = 0.0;
+
+    double readRequestsPerSecond = 0.0;
+    double writeRequestsPerSecond = 0.0;
+
+    double readBytesRequestedPerSecond = 0.0;
+    double writeBytesRequestedPerSecond = 0.0;
+};
+
+struct MemoryConnectionStats
+{
+    bool vmmHandleValid = false;
+    bool dmaInitialized = false;
+    bool processInitialized = false;
+
+    bool vmmLibraryLoaded = false;
+    bool leechCoreLibraryLoaded = false;
+    bool ftd3xxLibraryLoaded = false;
+
+    uint64_t vmmHandleAddress = 0;
+
+    uint32_t processId = 0;
+    std::string processName;
+
+    uint64_t targetBaseAddress = 0;
+    uint64_t targetBaseSize = 0;
+
+    bool fpgaInfoAvailable = false;
+    uint64_t fpgaId = 0;
+    uint64_t deviceId = 0;
+    uint64_t firmwareMajor = 0;
+    uint64_t firmwareMinor = 0;
+
+    bool cacheInfoAvailable = false;
+    uint64_t processCachePartialTicks = 0;
+    uint64_t processCacheTotalTicks = 0;
+    uint64_t readCacheTicks = 0;
+    uint64_t tlbCacheTicks = 0;
+};
+
+struct TarkovPointerSnapshot
+{
+    uint64_t unityPlayerBase = 0;
+    uint64_t unityPlayerSize = 0;
+    uint64_t gameAssemblyBase = 0;
+    uint64_t gameObjectManagerSlot = 0;
+    uint64_t gameObjectManager = 0;
+    bool gameObjectManagerSignatureAttempted = false;
+    bool gameObjectManagerResolvedBySignature = false;
+};
+
+enum class DmaConnectionState : uint8_t
+{
+    Disconnected,
+    Connecting,
+    WaitingForProcess,
+    Connected,
+    Failed
+};
+
+enum class DmaCacheMode : uint8_t
+{
+    Cached,
+    Uncached
+};
+
+enum class DmaHealthSource : uint8_t
+{
+    GameWorldSingleton,
+    CameraChain,
+    OpticMesh,
+    LocalPlayerPose,
+    Count
+};
+
+class Memory
+{
+private:
+    struct LibModules
+    {
+        HMODULE VMM = nullptr;
+        HMODULE FTD3XX = nullptr;
+        HMODULE LEECHCORE = nullptr;
+    };
+
+    static inline LibModules modules{};
+
+    struct CurrentProcessInformation
+    {
+        DWORD PID = 0;
+        uintptr_t base_address = 0;
+        size_t base_size = 0;
+        std::string process_name{};
+    };
+
+    static inline CurrentProcessInformation current_process{};
+
+    static inline std::atomic_bool DMA_INITIALIZED{ false };
+    static inline std::atomic_bool PROCESS_INITIALIZED{ false };
+
+    bool DumpMemoryMap(bool debug = false);
+    bool SetFPGA();
+
+    std::thread dmaThread;
+
+    std::atomic_bool initRunning{ false };
+    std::atomic_bool cancelInit{ false };
+    std::atomic<DmaConnectionState> dmaState{ DmaConnectionState::Disconnected };
+
+    std::shared_ptr<c_keys> key;
+    c_registry registry;
+    c_shellcode shellcode;
+    
+private:
+    struct TrafficCounterSnapshot
+    {
+        uint64_t readOperations = 0;
+        uint64_t writeOperations = 0;
+
+        uint64_t readSuccesses = 0;
+        uint64_t writeSuccesses = 0;
+
+        uint64_t readFailures = 0;
+        uint64_t writeFailures = 0;
+
+        uint64_t readRequests = 0;
+        uint64_t writeRequests = 0;
+
+        uint64_t readBytesRequested = 0;
+        uint64_t writeBytesRequested = 0;
+
+        uint64_t directReadBytesReturned = 0;
+
+        uint64_t scatterReadBatches = 0;
+        uint64_t scatterWriteBatches = 0;
+
+        uint64_t scatterReadRequests = 0;
+        uint64_t scatterWriteRequests = 0;
+
+        uint64_t scatterClearFailures = 0;
+    };
+
+    struct TrafficRateSnapshot
+    {
+        double sampleWindowSeconds = 0.0;
+
+        double readOperationsPerSecond = 0.0;
+        double writeOperationsPerSecond = 0.0;
+
+        double readRequestsPerSecond = 0.0;
+        double writeRequestsPerSecond = 0.0;
+
+        double readBytesRequestedPerSecond = 0.0;
+        double writeBytesRequestedPerSecond = 0.0;
+    };
+
+    TrafficCounterSnapshot LoadTrafficCounters() const;
+
+    void RecordDirectRead(
+        size_t requestedBytes,
+        size_t returnedBytes,
+        bool success
+    ) const;
+
+    void RecordDirectWrite(
+        size_t requestedBytes,
+        bool success
+    ) const;
+
+    void RecordScatterReadRequest(size_t requestedBytes) const;
+    void RecordScatterWriteRequest(size_t requestedBytes) const;
+
+    void RecordScatterReadExecute(bool success) const;
+    void RecordScatterWriteExecute(bool success) const;
+
+    void RecordScatterClearFailure() const;
+
+    // Atomic counters: no locking in normal DMA read/write paths.
+    mutable std::atomic<uint64_t> statsReadOperations{ 0 };
+    mutable std::atomic<uint64_t> statsWriteOperations{ 0 };
+
+    mutable std::atomic<uint64_t> statsReadSuccesses{ 0 };
+    mutable std::atomic<uint64_t> statsWriteSuccesses{ 0 };
+
+    mutable std::atomic<uint64_t> statsReadFailures{ 0 };
+    mutable std::atomic<uint64_t> statsWriteFailures{ 0 };
+
+    mutable std::atomic<uint64_t> statsReadRequests{ 0 };
+    mutable std::atomic<uint64_t> statsWriteRequests{ 0 };
+
+    mutable std::atomic<uint64_t> statsReadBytesRequested{ 0 };
+    mutable std::atomic<uint64_t> statsWriteBytesRequested{ 0 };
+
+    mutable std::atomic<uint64_t> statsDirectReadBytesReturned{ 0 };
+
+    mutable std::atomic<uint64_t> statsScatterReadBatches{ 0 };
+    mutable std::atomic<uint64_t> statsScatterWriteBatches{ 0 };
+
+    mutable std::atomic<uint64_t> statsScatterReadRequests{ 0 };
+    mutable std::atomic<uint64_t> statsScatterWriteRequests{ 0 };
+
+    mutable std::atomic<uint64_t> statsScatterClearFailures{ 0 };
+
+    // stats from the debug UI.
+    mutable std::mutex trafficStatsMutex;
+    mutable bool trafficStatsBaselineValid = false;
+
+    mutable TrafficCounterSnapshot trafficStatsBaseline{};
+    mutable TrafficRateSnapshot trafficRateSnapshot{};
+
+    mutable std::chrono::steady_clock::time_point trafficStatsLastSample{};
+
+    mutable std::mutex handleMutex;
+    mutable PriorityDmaMutex dmaOpsMutex;
+
+    mutable std::mutex tarkovPointersMutex;
+    TarkovPointerSnapshot tarkovPointers{};
+
+    [[nodiscard]] bool TryGetModuleInfo(const std::string& moduleName, uintptr_t& moduleBase, size_t& moduleSize) const;
+    void ClearTarkovPointerSnapshot();
+
+    std::chrono::steady_clock::time_point lastMemoryCacheRefresh{};
+    std::chrono::steady_clock::time_point lastTlbCacheRefresh{};
+
+    struct DmaHealthFailureState
+    {
+        uint64_t fingerprint = 0;
+        uint32_t consecutiveFailures = 0;
+        std::chrono::steady_clock::time_point firstFailure{};
+        bool recoveryQueued = false;
+    };
+
+    mutable std::mutex dmaHealthMutex;
+    std::array<DmaHealthFailureState,
+        static_cast<size_t>(DmaHealthSource::Count)> dmaHealthFailures{};
+    std::atomic_bool dmaHealthRecoveryPending{ false };
+    std::atomic<uint64_t> dmaRecoveryEpoch{ 0 };
+    std::chrono::steady_clock::time_point lastDmaHealthRecovery{};
+
+private:
+    [[nodiscard]] static DWORD BuildReadFlags(DmaCacheMode cacheMode);
+    [[nodiscard]] static DWORD BuildScatterFlags(DmaCacheMode cacheMode);
+
+public:
+    // Keep a single DMA operation short enough that a waiting high-priority
+    // task can take the bus between chunks.
+    static constexpr size_t MaxDmaTransferBytes = 64 * 1024;
+    static constexpr size_t MaxDmaScatterRequests = 256;
+
+    struct ScatterReadRequest
+    {
+        uint64_t address = 0;
+        void* buffer = nullptr;
+        size_t size = 0;
+    };
+
+    enum class TryScatterReadResult : uint8_t
+    {
+        Success,
+        Busy,
+        Failed
+    };
+
+    Memory();
+    ~Memory();
+
+    Memory(const Memory&) = delete;
+    Memory& operator=(const Memory&) = delete;
+
+    c_registry& GetRegistry() { return registry; }
+    const c_registry& GetRegistry() const { return registry; }
+
+    c_keys* GetKeyboard() { return key.get(); }
+    const c_keys* GetKeyboard() const { return key.get(); }
+
+    c_shellcode& GetShellcode() { return shellcode; }
+    const c_shellcode& GetShellcode() const { return shellcode; }
+
+    bool Init(bool memMap = true, bool debug = false);
+    bool WaitForRetryOrCancel(DWORD milliseconds);
+    void CloseAndReset();
+    void doDMAConnect();
+
+    DmaConnectionState GetDmaState() const;
+
+    bool IsInitRunning() const;
+    bool IsDmaOperational() const;
+    [[nodiscard]] bool ShouldDeferDmaWork(DmaPriority priority) const
+    {
+        return dmaOpsMutex.ShouldDefer(priority);
+    }
+
+    DWORD GetPidFromName(const std::string& process_name);
+    std::vector<int> GetPidListFromName(const std::string& process_name);
+    std::vector<std::string> GetModuleList(const std::string& process_name);
+
+    VMMDLL_PROCESS_INFORMATION GetProcessInformation();
+    PEB GetProcessPeb();
+
+    uintptr_t GetBaseDaddy(const std::string& module_name);
+    size_t GetBaseSize(const std::string& module_name);
+
+    void PreloadTarkovPointerSnapshot();
+    void RefreshTarkovPointerSnapshot();
+    [[nodiscard]] TarkovPointerSnapshot GetTarkovPointerSnapshot() const;
+
+    uintptr_t GetExportTableAddress(std::string import, std::string process, std::string module);
+    uintptr_t GetImportTableAddress(std::string import, std::string process, std::string module);
+
+    bool FixCr3();
+    bool DumpMemory(uintptr_t address, std::string path);
+
+    MemoryTrafficStats GetTrafficStats() const;
+    std::string GetTrafficStatsString() const;
+    void ResetTrafficStats();
+
+    MemoryConnectionStats GetConnectionStats() const;
+    std::string GetConnectionStatsString() const;
+
+    uint64_t FindSignature(
+        const char* signature,
+        uint64_t range_start,
+        uint64_t range_end,
+        int PID = 0,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached
+    );
+
+    bool RefreshProcessInformationNow();
+    void RunCacheMaintenance();
+    void ReportDmaHealthFailure(DmaHealthSource source, uint64_t fingerprint = 0);
+    void ReportDmaHealthSuccess(DmaHealthSource source);
+    [[nodiscard]] uint64_t GetDmaRecoveryEpoch() const noexcept;
+
+
+    bool WriteBufferEnsure(
+        uintptr_t address,
+        const void* buffer,
+        size_t size,
+        DmaCacheMode cacheMode = DmaCacheMode::Uncached
+    ) const;
+
+    bool Write(uintptr_t address, const void* buffer, size_t size) const;
+    bool Write(uintptr_t address, const void* buffer, size_t size, int pid) const;
+
+    template <typename T>
+    bool WriteValue(uintptr_t address, const T& value) const
+    {
+        static_assert(std::is_trivially_copyable_v<T>, "WriteValue<T> requires trivially copyable type");
+
+        if (!address)
+            return false;
+
+        return Write(address, &value, sizeof(T));
+    }
+
+    bool Read(
+        uintptr_t address,
+        void* buffer,
+        size_t size,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::string_view callingFunc = {},
+        std::source_location caller = std::source_location::current()) const;
+
+    bool Read(
+        uintptr_t address,
+        void* buffer,
+        size_t size,
+        int pid,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::string_view callingFunc = {},
+        std::source_location caller = std::source_location::current()) const;
+
+    template <typename T>
+    [[nodiscard]] bool TryRead(
+        uint64_t address,
+        T& out,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::source_location caller = std::source_location::current()) const
+    {
+        static_assert(std::is_trivially_copyable_v<T>, "TryRead<T> requires trivially copyable type");
+
+        out = {};
+
+        if (!address)
+            return false;
+
+        return Read(address, &out, sizeof(T), cacheMode, {}, caller);
+    }
+
+    template <typename T>
+    [[nodiscard]] std::optional<T> ReadOpt(
+        uint64_t address,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::source_location caller = std::source_location::current()) const
+    {
+        T value{};
+
+        if (!TryRead(address, value, cacheMode, caller))
+            return std::nullopt;
+
+        return value;
+    }
+
+    template <typename T>
+    [[nodiscard]] T ReadOr(
+        uint64_t address,
+        T fallback,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::source_location caller = std::source_location::current()) const
+    {
+        T value{};
+
+        if (!TryRead(address, value, cacheMode, caller))
+            return fallback;
+
+        return value;
+    }
+
+    template <typename T>
+    [[nodiscard]] T Read(
+        uint64_t address,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::source_location caller = std::source_location::current()) const
+    {
+        static_assert(std::is_trivially_copyable_v<T>, "Read<T> requires trivially copyable type");
+
+        T value;
+        std::memset(&value, 0, sizeof(T));
+
+        Read(address, &value, sizeof(T), cacheMode, {}, caller);
+
+        return value;
+    }
+
+    template <typename T>
+    [[nodiscard]] T Read(
+        void* address,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::source_location caller = std::source_location::current()) const
+    {
+        return Read<T>(reinterpret_cast<uint64_t>(address), cacheMode, caller);
+    }
+
+    template <typename T>
+    [[nodiscard]] std::vector<T> ReadVector(
+        uint64_t address,
+        size_t count,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::source_location caller = std::source_location::current()) const
+    {
+        static_assert(std::is_trivially_copyable_v<T>, "ReadVector<T> requires trivially copyable type");
+
+        if (!address || count == 0)
+            return {};
+
+        constexpr size_t MAX_VECTOR_COUNT = 1'000'000;
+
+        if (count > MAX_VECTOR_COUNT)
+            return {};
+
+        if (count > (std::numeric_limits<size_t>::max)() / sizeof(T))
+            return {};
+
+        std::vector<T> buffer(count);
+        const size_t bytes = count * sizeof(T);
+
+        if (!Read(address, buffer.data(), bytes, cacheMode, {}, caller))
+            return {};
+
+        return buffer;
+    }
+
+    template <typename T>
+    [[nodiscard]] std::vector<T> read_vec_new(
+        uint64_t address,
+        size_t count,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::source_location caller = std::source_location::current()) const
+    {
+        return ReadVector<T>(address, count, cacheMode, caller);
+    }
+
+    template <typename T>
+    [[nodiscard]] std::vector<T> read_vec(
+        uint64_t address,
+        size_t count,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached,
+        std::source_location caller = std::source_location::current()) const
+    {
+        return ReadVector<T>(address, count, cacheMode, caller);
+    }
+
+    [[nodiscard]] bool ReadChain(
+        uint64_t base,
+        const std::vector<uint64_t>& offsets,
+        uint64_t& out,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached
+    ) const;
+
+    [[nodiscard]] uint64_t ReadChain(
+        uint64_t base,
+        const std::vector<uint64_t>& offsets,
+        DmaCacheMode cacheMode = DmaCacheMode::Cached
+    ) const
+    {
+        uint64_t out = 0;
+        ReadChain(base, offsets, out, cacheMode);
+        return out;
+    }
+
+    std::string readUnityString(uintptr_t address, SIZE_T maxChars = 128, DmaCacheMode cacheMode = DmaCacheMode::Cached);
+    std::string readUnityStringField(uintptr_t fieldAddress, SIZE_T maxChars = 128, DmaCacheMode cacheMode = DmaCacheMode::Cached);
+    std::string readUTF8String(uint64_t address, SIZE_T size, DmaCacheMode cacheMode = DmaCacheMode::Cached);
+    std::string readString(uint64_t address, size_t size, DmaCacheMode cacheMode = DmaCacheMode::Cached);
+    std::wstring readWideString(uintptr_t address, SIZE_T size, DmaCacheMode cacheMode = DmaCacheMode::Cached);
+    std::string readUnicodeString(uintptr_t address, SIZE_T size, DmaCacheMode cacheMode = DmaCacheMode::Cached);
+
+    bool ReadScatter(const ScatterReadRequest* requests, size_t requestCount, DmaCacheMode cacheMode = DmaCacheMode::Cached, std::string_view callingFunc = {});
+
+    TryScatterReadResult TryReadScatter(const ScatterReadRequest* requests, size_t requestCount, DmaCacheMode cacheMode = DmaCacheMode::Cached, std::string_view callingFunc = {}, std::span<DWORD> bytesRead = {});
+
+    [[nodiscard]] static bool IsValidPointer(uintptr_t pointer)
+    {
+        return pointer > 0xFFFFFF && pointer < 0x0000800000000000;
+    }
+
+    void doDMADisconnect();
+
+    bool IsDisconnectRequested() const;
+
+
+    ULONG64 GET_MonoModuleAddress(char* module_name);
+
+    int FindSignatureOffset(
+        const std::vector<uint8_t>& array,
+        const std::vector<uint8_t>& signature,
+        const std::string& mask = ""
+    );
+
+    VMM_HANDLE vHandle = nullptr;
+
+    uint64_t base = 0;
+    uint64_t baseSize = 0;
+
+};
+
+inline Memory mem;

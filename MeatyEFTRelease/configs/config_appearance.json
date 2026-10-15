@@ -1,0 +1,578 @@
+{
+    "colours": {
+        "aiBTR": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "containerColour": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "crosshair": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "exfils": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "fovCircle": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "grenades": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "playerAI": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "playerBlackDiv": [
+            0.75,
+            0.10000000149011612,
+            0.949999988079071,
+            1.0
+        ],
+        "playerBoss": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "playerCorpse": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "playerFriendly": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "playerGroupLine": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "playerLocal": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "playerPMC": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "playerScav": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "playerWatched": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "questColour": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "questMarker": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "tripwires": [
+            1.0,
+            0.30000001192092896,
+            0.0,
+            1.0
+        ],
+        "valueLootColour": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "wishListColour": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ]
+    },
+    "markers": {
+        "Container": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 13.0,
+                "shape": 1,
+                "size": 7.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 14.0,
+                "shape": 1,
+                "size": 7.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "Corpse": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 13.0,
+                "shape": 1,
+                "size": 7.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 14.0,
+                "shape": 1,
+                "size": 7.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "Crosshair": {
+            "fillOpacity": 1.0,
+            "fuser": {
+                "fontSize": 14.0,
+                "shape": 0,
+                "size": 8.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 14.0,
+                "shape": 0,
+                "size": 8.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "Exfil": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 14.0,
+                "shape": 0,
+                "size": 8.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 14.0,
+                "shape": 0,
+                "size": 8.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "FOV Circle": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 14.0,
+                "shape": 0,
+                "size": 16.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 14.0,
+                "shape": 0,
+                "size": 16.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "Grenade": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 14.0,
+                "shape": 0,
+                "size": 7.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 14.0,
+                "shape": 0,
+                "size": 7.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "Group Line": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 13.0,
+                "shape": 0,
+                "size": 7.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 14.0,
+                "shape": 0,
+                "size": 7.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "Loot": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 13.0,
+                "shape": 3,
+                "size": 6.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 14.0,
+                "shape": 3,
+                "size": 6.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "Player": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 13.0,
+                "shape": 3,
+                "size": 8.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 16.0,
+                "shape": 2,
+                "size": 9.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "Quest": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 13.0,
+                "shape": 1,
+                "size": 7.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 15.0,
+                "shape": 1,
+                "size": 7.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        },
+        "Tripwire": {
+            "fillOpacity": 0.8500000238418579,
+            "fuser": {
+                "fontSize": 14.0,
+                "shape": 2,
+                "size": 7.0
+            },
+            "markerOutline": true,
+            "markerOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.9200000166893005
+            ],
+            "markerOutlineThickness": 1.25,
+            "radar": {
+                "fontSize": 14.0,
+                "shape": 2,
+                "size": 7.0
+            },
+            "shadowOffset": 2.0,
+            "textColour": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "textOutline": true,
+            "textOutlineColour": [
+                0.0,
+                0.0,
+                0.0,
+                0.949999988079071
+            ],
+            "textShadow": false,
+            "useMarkerColourForText": true
+        }
+    },
+    "playerMarkers": {
+        "AI": {
+            "shape": 2,
+            "size": 9.0
+        },
+        "BTR": {
+            "shape": 2,
+            "size": 9.0
+        },
+        "Black Division": {
+            "shape": 2,
+            "size": 9.0
+        },
+        "Boss": {
+            "shape": 2,
+            "size": 9.0
+        },
+        "Friendly": {
+            "shape": 2,
+            "size": 9.0
+        },
+        "Local player": {
+            "shape": 2,
+            "size": 9.0
+        },
+        "PMC": {
+            "shape": 2,
+            "size": 9.0
+        },
+        "Player scav": {
+            "shape": 2,
+            "size": 9.0
+        },
+        "Watched": {
+            "shape": 2,
+            "size": 9.0
+        }
+    },
+    "version": 2
+}

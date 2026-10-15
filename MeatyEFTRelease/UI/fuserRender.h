@@ -1,0 +1,2046 @@
+#pragma once
+
+#include "DxRenderWindow.h"
+#include "memWriteTab.h"
+#include "globals.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <string>
+#include <atomic>
+#include <iomanip>
+#include <sstream>
+#include <iostream>
+
+#include "../Tarkov/GameWorld/MainGame.h"
+#include "../Core/Utilities.h"
+#include "../Tarkov/GameWorld/RegisteredPlayers.h"
+#include "../Tarkov/GameWorld/Player/PlayerAppearance.h"
+#include "../Tarkov/GameWorld/Loot/Loot.h"
+#include "../Tarkov/GameWorld/Explosives/ExplosiveManager.h"
+#include "../Tarkov/GameWorld/QuestManager.h"
+#include "../Tarkov/Unity/cameraManager.h"
+#include "../Tarkov/Features/Aim/Aimbot.h"
+#include "../Tarkov/Features/Aim/FireportTracker.h"
+#include "../Tarkov/Features/Aim/ReadOnlyAim.h"
+#include "../memory/Memory.h"
+#include "../Tarkov/Features/Visibility/AtlasVisibility.h"
+#include "aimLineTargeting.h"
+#include "../Core/InputDevice.h"
+#include "globals.h"
+#include "../Tarkov/GameWorld/Exits/Exfil.h"
+
+namespace fuserRender
+{
+    inline thread_local CameraManagerSnapshot g_frameManagedCameraSnapshot;
+    inline thread_local PlayerSnapshot g_framePlayerSnapshot;
+    inline thread_local LootCacheSnapshot g_frameLootSnapshot;
+    inline thread_local GrenadeCacheSnapshot g_frameGrenadeSnapshot;
+    inline thread_local QuestPublishedSnapshot g_frameQuestSnapshot;
+    inline thread_local ExfilCacheSnapshot g_frameExfilSnapshot;
+    inline thread_local FireportPoseSnapshot g_frameFireportSnapshot;
+    inline thread_local glm::vec3 g_frameLocalLocation{};
+
+    static inline bool ProjectWorldToScreen(
+        const glm::vec3& world,
+        glm::vec2* screen)
+    {
+        if (!screen)
+            return false;
+
+        return g_frameManagedCameraSnapshot &&
+            CameraManager::worldToScreen(
+                *g_frameManagedCameraSnapshot,
+                world,
+                *screen,
+                espGlobals::gameRes.x,
+                espGlobals::gameRes.y);
+    }
+
+    static inline bool ProjectSkeletonWorldToScreen(
+        const glm::vec3& world,
+        glm::vec2* screen)
+    {
+        return ProjectWorldToScreen(world, screen);
+    }
+
+    static inline bool FrameCameraValid()
+    {
+        return g_frameManagedCameraSnapshot &&
+            g_frameManagedCameraSnapshot->valid;
+    }
+
+    static inline bool FrameCameraScoped()
+    {
+        return g_frameManagedCameraSnapshot &&
+            g_frameManagedCameraSnapshot->valid &&
+            g_frameManagedCameraSnapshot->scoped;
+    }
+
+    static inline void CaptureFrameSnapshots()
+    {
+        g_frameManagedCameraSnapshot = cameraManagerTest.snapshot();
+
+        g_framePlayerSnapshot = registeredPlayers.getCacheSnapshot();
+        g_frameLootSnapshot = Loot.getCacheSnapshot();
+        g_frameGrenadeSnapshot = explosiveManager.getGrenadesSnapshot();
+        g_frameQuestSnapshot = GetQuestPublishedSnapshot();
+        g_frameExfilSnapshot = exfil.getCacheExfilSnapshot();
+        g_frameFireportSnapshot = g_fireport.getSnapshot();
+        g_frameLocalLocation = registeredPlayers.getLocalStateSnapshot()->location;
+    }
+
+    static inline void ReleaseFrameSnapshots()
+    {
+        g_frameManagedCameraSnapshot.reset();
+        g_framePlayerSnapshot.reset();
+        g_frameLootSnapshot.reset();
+        g_frameGrenadeSnapshot.reset();
+        g_frameQuestSnapshot.reset();
+        g_frameExfilSnapshot.reset();
+        g_frameFireportSnapshot.reset();
+    }
+
+    //exception tracking
+
+    inline std::atomic<const char*> g_currentStage = "Idle";
+
+    static inline const char* GetCurrentStage()
+    {
+        const char* stage = g_currentStage.load(std::memory_order_relaxed);
+        return stage ? stage : "Unknown";
+    }
+
+    class RenderStageScope
+    {
+    public:
+        explicit RenderStageScope(const char* stage)
+        {
+            m_previousStage = g_currentStage.load(std::memory_order_relaxed);
+            g_currentStage.store(stage, std::memory_order_relaxed);
+        }
+
+        ~RenderStageScope()
+        {
+            g_currentStage.store(m_previousStage, std::memory_order_relaxed);
+        }
+
+    private:
+        const char* m_previousStage = "Idle";
+    };
+
+    static inline void LogStageError(const std::string& message)
+    {
+        LOGS.logError("[FUSER][RENDER] " + message);
+    }
+
+    template <typename Fn>
+    static inline bool SafeRenderStage(const char* stageName, Fn&& fn)
+    {
+        RenderStageScope scope(stageName);
+
+        try
+        {
+            fn();
+            return true;
+        }
+        catch (const std::exception& e)
+        {
+            LogStageError(
+                std::string("Stage failed: ") +
+                stageName +
+                " Exception: " +
+                e.what()
+            );
+
+            return false;
+        }
+        catch (...)
+        {
+            LogStageError(
+                std::string("Stage failed: ") +
+                stageName +
+                " Unknown exception"
+            );
+
+            return false;
+        }
+    }
+
+    // end exception tracking
+
+    inline std::atomic_bool g_testSceneEnabled = false;
+
+    static inline bool IsTestSceneEnabled()
+    {
+        return g_testSceneEnabled.load(std::memory_order_relaxed);
+    }
+
+    static inline void SetTestSceneEnabled(bool enabled)
+    {
+        g_testSceneEnabled.store(enabled, std::memory_order_relaxed);
+    }
+
+    static inline float GetFrameFPS()
+    {
+        using namespace std::chrono;
+
+        static steady_clock::time_point lastTime = steady_clock::now();
+        static float fps = 0.0f;
+        static int frameCount = 0;
+        static float accumulator = 0.0f;
+
+        const steady_clock::time_point now = steady_clock::now();
+        const float delta = duration<float>(now - lastTime).count();
+        lastTime = now;
+
+        accumulator += delta;
+        frameCount++;
+
+        if (accumulator >= 0.50f)
+        {
+            fps = static_cast<float>(frameCount) / accumulator;
+            frameCount = 0;
+            accumulator = 0.0f;
+        }
+
+        return fps;
+    }
+
+    static inline float NowSeconds()
+    {
+        using namespace std::chrono;
+
+        static const steady_clock::time_point startTime = steady_clock::now();
+        const steady_clock::time_point now = steady_clock::now();
+
+        return duration<float>(now - startTime).count();
+    }
+
+    static inline float Wave01(float value)
+    {
+        return (std::sin(value) * 0.5f) + 0.5f;
+    }
+
+    static inline glm::vec4 WithOpacityMultiplier(const glm::vec4& colour, float opacityMultiplier)
+    {
+        glm::vec4 result = colour;
+        result.a = std::clamp(result.a * opacityMultiplier, 0.0f, 1.0f);
+        return result;
+    }
+
+    static inline void RenderStyledWorldMarker(MarkerCategory category, const glm::vec2& screenPosition, const std::string& label, const glm::vec4& markerColour)
+    {
+        const MarkerStyle style = appearanceManager.GetStyle(category);
+        const MarkerViewStyle& view = style.fuser;
+        glm::vec4 fillColour = markerColour;
+        fillColour.a = std::clamp(fillColour.a * style.fillOpacity, 0.0f, 1.0f);
+        glm::vec4 outlineColour = style.markerOutline ? style.markerOutlineColour : glm::vec4(0.0f);
+        outlineColour.a = std::clamp(outlineColour.a * markerColour.a, 0.0f, 1.0f);
+        const glm::vec4 textColour = GetMarkerTextColour(style, markerColour);
+
+        g_DxWindow.DrawMarkerWithText(
+            screenPosition.x,
+            screenPosition.y,
+            view.size * 2.0f,
+            label,
+            outlineColour,
+            fillColour,
+            textColour,
+            view.fontSize,
+            4.0f,
+            style.markerOutlineThickness,
+            style.textOutline,
+            style.textOutlineColour,
+            view.shape,
+            style.textShadow,
+            style.shadowOffset);
+    }
+
+    static inline void RenderStyledWorldLabel(MarkerCategory category, const glm::vec2& screenPosition, const std::string& label, const glm::vec4& markerColour, bool centered = true)
+    {
+        const MarkerStyle style = appearanceManager.GetStyle(category);
+        const glm::vec4 textColour = GetMarkerTextColour(style, markerColour);
+        g_DxWindow.DrawString(label, screenPosition.x, screenPosition.y, style.fuser.fontSize, textColour, centered, style.textOutline,
+            style.textOutlineColour, L"", style.textShadow, style.shadowOffset);
+    }
+
+    static inline void RenderMovingBox(float time, float screenW, float screenH, float renderScale)
+    {
+        const glm::vec4 outlineColour = glm::vec4(0.15f, 0.65f, 1.0f, 1.0f);
+        const glm::vec4 fillColour = glm::vec4(0.15f, 0.65f, 1.0f, 0.18f);
+        const glm::vec4 textColour = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+
+        const float boxW = 180.0f;
+        const float boxH = 70.0f;
+        const float drawnBoxW = boxW * renderScale;
+        const float drawnBoxH = boxH * renderScale;
+
+        const float rangeX = std::max(1.0f, screenW - drawnBoxW - 80.0f);
+
+        const float x = 40.0f + (Wave01(time * 1.2f) * rangeX);
+        const float y = 70.0f;
+
+        g_DxWindow.DrawBox(
+            x,
+            y,
+            boxW,
+            boxH,
+            outlineColour,
+            2.0f,
+            fillColour,
+            true
+        );
+
+        g_DxWindow.DrawString(
+            "Moving Box",
+            x + (drawnBoxW * 0.5f),
+            y + drawnBoxH + (8.0f * renderScale),
+            15.0f,
+            textColour,
+            true,
+            true
+        );
+    }
+
+    static inline void RenderOrbitCircle(float time, float screenW, float screenH)
+    {
+        const glm::vec4 lineColour = glm::vec4(0.45f, 0.45f, 0.45f, 0.65f);
+        const glm::vec4 circleFill = glm::vec4(1.0f, 0.35f, 0.15f, 0.35f);
+        const glm::vec4 circleOutline = glm::vec4(1.0f, 0.35f, 0.15f, 1.0f);
+        const glm::vec4 textColour = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+
+        const float centerX = screenW * 0.5f;
+        const float centerY = screenH * 0.5f;
+
+        const float orbitX = std::min(220.0f, screenW * 0.25f);
+        const float orbitY = std::min(130.0f, screenH * 0.22f);
+
+        const float x = centerX + (std::cos(time * 1.4f) * orbitX);
+        const float y = centerY + (std::sin(time * 1.1f) * orbitY);
+
+        g_DxWindow.DrawLine(
+            centerX,
+            centerY,
+            x,
+            y,
+            lineColour,
+            1.0f
+        );
+
+        g_DxWindow.DrawFilledCircle(
+            x,
+            y,
+            22.0f,
+            circleFill
+        );
+
+        g_DxWindow.DrawCircle(
+            x,
+            y,
+            22.0f,
+            circleOutline,
+            2.0f
+        );
+
+        g_DxWindow.DrawString(
+            "Orbit",
+            x,
+            y + 28.0f,
+            14.0f,
+            textColour,
+            true,
+            true
+        );
+    }
+
+    static inline void RenderRotatingLine(float time, float screenW, float screenH)
+    {
+        const glm::vec4 lineColour = glm::vec4(0.25f, 1.0f, 0.35f, 1.0f);
+        const glm::vec4 centerColour = glm::vec4(0.25f, 1.0f, 0.35f, 0.35f);
+
+        const float centerX = screenW * 0.5f;
+        const float centerY = screenH * 0.5f;
+
+        const float length = std::min(screenW, screenH) * 0.18f;
+
+        const float angle = time * 2.0f;
+
+        const float x2 = centerX + std::cos(angle) * length;
+        const float y2 = centerY + std::sin(angle) * length;
+
+        g_DxWindow.DrawFilledCircle(
+            centerX,
+            centerY,
+            5.0f,
+            centerColour
+        );
+
+        g_DxWindow.DrawLine(
+            centerX,
+            centerY,
+            x2,
+            y2,
+            lineColour,
+            3.0f
+        );
+    }
+
+    static inline void RenderMarkers(float time, float screenW, float screenH)
+    {
+        const glm::vec4 markerOutline = glm::vec4(1.0f, 0.85f, 0.1f, 1.0f);
+        const glm::vec4 markerFill = glm::vec4(1.0f, 0.85f, 0.1f, 0.25f);
+        const glm::vec4 textColour = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+
+        const float pulse = 6.0f + (Wave01(time * 4.0f) * 5.0f);
+
+        g_DxWindow.DrawMarkerWithText(
+            screenW * 0.25f,
+            screenH * 0.72f,
+            pulse,
+            "Marker A",
+            markerOutline,
+            markerFill,
+            textColour,
+            14.0f,
+            6.0f,
+            1.0f
+        );
+
+        g_DxWindow.DrawMarkerWithText(
+            screenW * 0.50f,
+            screenH * 0.78f,
+            8.0f,
+            "Marker B",
+            markerOutline,
+            markerFill,
+            textColour,
+            14.0f,
+            6.0f,
+            1.0f
+        );
+
+        g_DxWindow.DrawMarkerWithText(
+            screenW * 0.75f,
+            screenH * 0.72f,
+            pulse,
+            "Marker C",
+            markerOutline,
+            markerFill,
+            textColour,
+            14.0f,
+            6.0f,
+            1.0f
+        );
+    }
+
+    static inline void RenderCornerBoxes(float screenW, float screenH, float renderScale)
+    {
+        const glm::vec4 colour = glm::vec4(0.8f, 0.2f, 1.0f, 1.0f);
+        const glm::vec4 fill = glm::vec4(0.8f, 0.2f, 1.0f, 0.10f);
+        constexpr float margin = 20.0f;
+        constexpr float boxW = 120.0f;
+        constexpr float boxH = 45.0f;
+
+        const float drawnBoxW = boxW * renderScale;
+        const float drawnBoxH = boxH * renderScale;
+        const float rightX = std::max(margin, screenW - margin - drawnBoxW);
+        const float bottomY = std::max(margin, screenH - margin - drawnBoxH);
+
+        g_DxWindow.DrawBox(
+            margin,
+            margin,
+            boxW,
+            boxH,
+            colour,
+            1.0f,
+            fill,
+            true
+        );
+
+        g_DxWindow.DrawBox(
+            rightX,
+            margin,
+            boxW,
+            boxH,
+            colour,
+            1.0f,
+            fill,
+            true
+        );
+
+        g_DxWindow.DrawBox(
+            margin,
+            bottomY,
+            boxW,
+            boxH,
+            colour,
+            1.0f,
+            fill,
+            true
+        );
+
+        g_DxWindow.DrawBox(
+            rightX,
+            bottomY,
+            boxW,
+            boxH,
+            colour,
+            1.0f,
+            fill,
+            true
+        );
+    }
+
+    static inline void RenderHeaderText(float time, float fps)
+    {
+        const glm::vec4 titleColour = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+        const glm::vec4 subColour = glm::vec4(0.65f, 0.85f, 1.0f, 1.0f);
+        const glm::vec4 fpsColour = glm::vec4(0.25f, 1.0f, 0.35f, 1.0f);
+
+        g_DxWindow.DrawString(
+            "Fuser Render Test",
+            20.0f,
+            20.0f,
+            22.0f,
+            titleColour,
+            false,
+            true
+        );
+
+        g_DxWindow.DrawString(
+            "DX window draw queue is active",
+            20.0f,
+            48.0f,
+            14.0f,
+            subColour,
+            false,
+            true
+        );
+
+        g_DxWindow.DrawString(
+            "Time: " + std::to_string(static_cast<int>(time)) + "s",
+            20.0f,
+            70.0f,
+            13.0f,
+            subColour,
+            false,
+            true
+        );
+
+        if (g_DxWindow.GetConfig().showFPS)
+        {
+            std::ostringstream fpsStream;
+            fpsStream.precision(0);
+            fpsStream << std::fixed << fps;
+
+            g_DxWindow.DrawString(
+                "FPS: " + fpsStream.str(),
+                20.0f,
+                90.0f,
+                13.0f,
+                fpsColour,
+                false,
+                true
+            );
+        }
+    }
+
+    static inline void RenderTestScene()
+    {
+        const float time = NowSeconds();
+        const float fps = GetFrameFPS();
+
+        float screenW = static_cast<float>(g_DxWindow.GetWindowWidth());
+        float screenH = static_cast<float>(g_DxWindow.GetWindowHeight());
+
+        if (screenW <= 0.0f)
+            screenW = 1280.0f;
+
+        if (screenH <= 0.0f)
+            screenH = 720.0f;
+
+        const float renderScale = std::max(0.05f, g_DxWindow.GetFinalRenderScale());
+
+        RenderHeaderText(time, fps);
+        RenderCornerBoxes(screenW, screenH, renderScale);
+        RenderMovingBox(time, screenW, screenH, renderScale);
+        RenderRotatingLine(time, screenW, screenH);
+        RenderOrbitCircle(time, screenW, screenH);
+        RenderMarkers(time, screenW, screenH);
+    }
+
+    // Client main render functions
+
+    static inline std::string CleanText(std::string text)
+    {
+        text.erase(
+            std::remove(text.begin(), text.end(), '\0'),
+            text.end()
+        );
+
+        return text;
+    }
+
+    static inline float ScreenWidth()
+    {
+        const int w = g_DxWindow.GetWindowWidth();
+        return w > 0 ? static_cast<float>(w) : 1280.0f;
+    }
+
+    static inline float ScreenHeight()
+    {
+        const int h = g_DxWindow.GetWindowHeight();
+        return h > 0 ? static_cast<float>(h) : 720.0f;
+    }
+
+    static inline void DrawCornerBox(
+        float x,
+        float y,
+        float w,
+        float h,
+        const glm::vec4& colour,
+        float thickness = 1.0f)
+    {
+        const float lineW = w * 0.25f;
+        const float lineH = h * 0.25f;
+
+        // Top left
+        g_DxWindow.DrawLine(x, y, x + lineW, y, colour, thickness);
+        g_DxWindow.DrawLine(x, y, x, y + lineH, colour, thickness);
+
+        // Top right
+        g_DxWindow.DrawLine(x + w, y, x + w - lineW, y, colour, thickness);
+        g_DxWindow.DrawLine(x + w, y, x + w, y + lineH, colour, thickness);
+
+        // Bottom left
+        g_DxWindow.DrawLine(x, y + h, x + lineW, y + h, colour, thickness);
+        g_DxWindow.DrawLine(x, y + h, x, y + h - lineH, colour, thickness);
+
+        // Bottom right
+        g_DxWindow.DrawLine(x + w, y + h, x + w - lineW, y + h, colour, thickness);
+        g_DxWindow.DrawLine(x + w, y + h, x + w, y + h - lineH, colour, thickness);
+    }
+
+    static inline void RenderHUD()
+    {
+        const float screenW = ScreenWidth();
+
+        const float fps = GetFrameFPS();
+
+        g_DxWindow.DrawString(
+            "MeatyEFT",
+            screenW - 100.0f,
+            20.0f,
+            14.0f,
+            glm::vec4(1.0f, 0.0f, 0.0f, 1.0f),
+            false,
+            true
+        );
+
+        if (g_DxWindow.GetConfig().showFPS)
+        {
+            const std::string fpsText =
+                "FPS: " + std::to_string(static_cast<int>(fps));
+
+            g_DxWindow.DrawString(
+                fpsText,
+                screenW - 100.0f,
+                40.0f,
+                14.0f,
+                glm::vec4(1.0f, 0.0f, 0.0f, 1.0f),
+                false,
+                true
+            );
+        }
+    }
+
+    static inline void RenderRosterMismatchWarning()
+    {
+        const PlayerRosterStatus status = registeredPlayers.getRosterStatus();
+        if (!status.possibleMissingEntities)
+            return;
+
+        const std::string text = "POSSIBLE MISSING ENTITIES  Registered: " + std::to_string(status.registeredCount) +
+            " | Alive cache: " + std::to_string(status.aliveCachedCount);
+        constexpr float fontSize = 18.0f;
+        constexpr float boxHeight = 34.0f;
+        const float screenCenterX = ScreenWidth() * 0.5f;
+        const float boxWidth = (static_cast<float>(text.size()) * fontSize * 0.56f) + 28.0f;
+        const float boxX = screenCenterX - (boxWidth * 0.5f);
+        constexpr float boxY = 12.0f;
+
+        g_DxWindow.DrawFilledRect(boxX, boxY, boxWidth, boxHeight, glm::vec4(0.19f, 0.13f, 0.01f, 0.93f));
+        g_DxWindow.DrawRect(boxX, boxY, boxWidth, boxHeight, glm::vec4(1.0f, 0.72f, 0.18f, 1.0f), 2.0f);
+        g_DxWindow.DrawString(text, screenCenterX, boxY + 7.0f, fontSize, glm::vec4(1.0f, 0.86f, 0.50f, 1.0f), true, true);
+    }
+
+    static inline void RenderCrosshair()
+    {
+        if (!FrameCameraValid())
+            return;
+
+        if (!espGlobals::drawCrosshair)
+            return;
+
+        if (FrameCameraScoped())
+            return;
+
+        const float screenW = ScreenWidth();
+        const float screenH = ScreenHeight();
+        const float centerX = screenW * 0.5f;
+        const float centerY = screenH * 0.5f;
+        const MarkerStyle style = appearanceManager.GetStyle(MarkerCategory::Crosshair);
+        const float size = style.fuser.size;
+        const float thickness = style.markerOutlineThickness;
+
+        if (style.fuser.shape == MarkerShape::Cross || style.fuser.shape == MarkerShape::X)
+        {
+            const bool diagonal = style.fuser.shape == MarkerShape::X;
+            g_DxWindow.DrawLine(
+                diagonal ? centerX - size : centerX - size,
+                diagonal ? centerY - size : centerY,
+                diagonal ? centerX + size : centerX + size,
+                diagonal ? centerY + size : centerY,
+                coloursGlobals::crosshair,
+                thickness);
+            g_DxWindow.DrawLine(
+                diagonal ? centerX + size : centerX,
+                centerY - size,
+                diagonal ? centerX - size : centerX,
+                centerY + size,
+                coloursGlobals::crosshair,
+                thickness);
+            return;
+        }
+
+        if (style.fuser.shape == MarkerShape::Square)
+        {
+            g_DxWindow.DrawRect(centerX - size, centerY - size, size * 2.0f, size * 2.0f, coloursGlobals::crosshair, thickness);
+            return;
+        }
+
+        if (style.fuser.shape == MarkerShape::Triangle)
+        {
+            g_DxWindow.DrawLine(centerX, centerY - size, centerX + size, centerY + size, coloursGlobals::crosshair, thickness);
+            g_DxWindow.DrawLine(centerX + size, centerY + size, centerX - size, centerY + size, coloursGlobals::crosshair, thickness);
+            g_DxWindow.DrawLine(centerX - size, centerY + size, centerX, centerY - size, coloursGlobals::crosshair, thickness);
+            return;
+        }
+
+        if (style.fuser.shape == MarkerShape::Diamond)
+        {
+            g_DxWindow.DrawLine(centerX, centerY - size, centerX + size, centerY, coloursGlobals::crosshair, thickness);
+            g_DxWindow.DrawLine(centerX + size, centerY, centerX, centerY + size, coloursGlobals::crosshair, thickness);
+            g_DxWindow.DrawLine(centerX, centerY + size, centerX - size, centerY, coloursGlobals::crosshair, thickness);
+            g_DxWindow.DrawLine(centerX - size, centerY, centerX, centerY - size, coloursGlobals::crosshair, thickness);
+            return;
+        }
+
+        g_DxWindow.DrawCircle(centerX, centerY, size, coloursGlobals::crosshair, thickness);
+    }
+
+    static inline void RenderFireportVisual()
+    {
+        if (!FrameCameraValid() ||
+            !espGlobals::drawFireportLine)
+            return;
+
+
+        const FireportPose& pose = *g_frameFireportSnapshot;
+        if (!pose.valid || !pose.screenStartOk || !pose.screenEndOk)
+            return;
+
+        static const glm::vec4 kFireportLine{1.0f, 0.86f, 0.24f, 0.95f};
+        g_DxWindow.DrawLine(
+            pose.screenStart.x,
+            pose.screenStart.y,
+            pose.screenEnd.x,
+            pose.screenEnd.y,
+            kFireportLine,
+            2.0f
+        );
+    }
+
+    static inline void RenderAimFovRing()
+    {
+        if (!aimGlobals::showAimFovRing ||
+            !aimGlobals::aimEnabled ||
+            !inputDevice.IsConnected())
+            return;
+        if (aimGlobals::aimFOV <= 0.f)
+            return;
+
+        const FireportPose& pose = *g_frameFireportSnapshot;
+        if (!pose.valid || !pose.aimRefOk)
+            return;
+
+        const MarkerStyle style = appearanceManager.GetStyle(MarkerCategory::FovCircle);
+        g_DxWindow.DrawCircle(
+            pose.screenEnd.x,
+            pose.screenEnd.y,
+            aimGlobals::aimFOV,
+            coloursGlobals::fovCircle,
+            style.markerOutlineThickness
+        );
+    }
+
+    static inline void RenderSilentAimFovRing()
+    {
+        auto& config = memWriteGlobals::config;
+
+        if (!config.combat.silentAimEnabled ||
+            !config.combat.silentAimShowFovRing ||
+            config.combat.silentAimFOV <= 0.f)
+            return;
+
+        if (!FrameCameraValid())
+            return;
+
+        const FireportPose& pose = *g_frameFireportSnapshot;
+        if (!pose.valid || !pose.aimRefOk)
+            return;
+
+        // Use orange color for silent aim FOV ring
+        const glm::vec4 silentAimColor = glm::vec4(1.0f, 0.5f, 0.0f, 0.8f);
+        const MarkerStyle style = appearanceManager.GetStyle(MarkerCategory::FovCircle);
+        g_DxWindow.DrawCircle(
+            pose.screenEnd.x,
+            pose.screenEnd.y,
+            config.combat.silentAimFOV,
+            silentAimColor,
+            style.markerOutlineThickness
+        );
+    }
+
+    static inline void RenderSilentAimLockLine()
+    {
+        auto& config = memWriteGlobals::config;
+        if (!config.combat.silentAimEnabled)
+            return;
+
+        if (!FrameCameraValid())
+            return;
+
+        const FireportPose& pose = *g_frameFireportSnapshot;
+        if (!pose.valid || !pose.aimRefOk)
+            return;
+
+        const std::optional<TargetResult> activeTarget = readOnlyAim.getActiveTarget();
+        const std::optional<TargetResult> liveTarget = readOnlyAim.getLiveTarget();
+
+        glm::vec2 targetScreen(0.0f);
+        bool hasTarget = false;
+
+        if (activeTarget.has_value())
+        {
+            targetScreen = activeTarget->screenPos;
+            hasTarget = std::isfinite(targetScreen.x) && std::isfinite(targetScreen.y);
+        }
+        else if (liveTarget.has_value())
+        {
+            targetScreen = liveTarget->screenPos;
+            hasTarget = std::isfinite(targetScreen.x) && std::isfinite(targetScreen.y);
+        }
+        else
+        {
+            const uint64_t currentTargetPtr = Aimbot::Instance().GetCurrentTarget();
+            if (currentTargetPtr)
+            {
+                glm::vec3 targetWorld(0.0f);
+                if (mem.Read(currentTargetPtr + 0x1A0, &targetWorld, sizeof(targetWorld)) &&
+                    ProjectWorldToScreen(targetWorld, &targetScreen) &&
+                    std::isfinite(targetScreen.x) &&
+                    std::isfinite(targetScreen.y))
+                {
+                    hasTarget = true;
+                }
+            }
+        }
+
+        if (!hasTarget)
+            return;
+
+        const glm::vec4 silentAimColor = Aimbot::Instance().IsSilentAimMode()
+            ? glm::vec4(1.0f, 0.5f, 0.0f, 0.95f)
+            : glm::vec4(1.0f, 0.75f, 0.35f, 0.75f);
+        g_DxWindow.DrawLine(
+            pose.screenEnd.x,
+            pose.screenEnd.y,
+            targetScreen.x,
+            targetScreen.y,
+            silentAimColor,
+            2.0f
+        );
+
+        g_DxWindow.DrawFilledCircle(targetScreen.x, targetScreen.y, 4.0f, silentAimColor);
+    }
+
+    static inline void RenderSilentAimStatus()
+    {
+        auto& config = memWriteGlobals::config;
+        if (!config.combat.silentAimEnabled)
+            return;
+
+        const std::optional<TargetResult> activeTarget = readOnlyAim.getActiveTarget();
+        const std::optional<TargetResult> liveTarget = readOnlyAim.getLiveTarget();
+        const bool hotkeyActive = config.combat.silentAimActive;
+        const bool silentMode = Aimbot::Instance().IsSilentAimMode();
+
+        std::string targetState = "NONE";
+        std::string targetSource = "-";
+        float worldDistanceSq = 0.0f;
+        float screenDistanceSq = 0.0f;
+        bool hasTargetMetrics = false;
+
+        if (activeTarget.has_value())
+        {
+            targetState = "LOCKED";
+            targetSource = "ReadOnlyAim/Active";
+            worldDistanceSq = activeTarget->worldDistanceSq;
+            screenDistanceSq = activeTarget->screenDistanceSq;
+            hasTargetMetrics = true;
+        }
+        else if (liveTarget.has_value())
+        {
+            targetState = "LIVE";
+            targetSource = "ReadOnlyAim/Live";
+            worldDistanceSq = liveTarget->worldDistanceSq;
+            screenDistanceSq = liveTarget->screenDistanceSq;
+            hasTargetMetrics = true;
+        }
+        else if (Aimbot::Instance().GetCurrentTarget() != 0)
+        {
+            targetState = "LOCKED";
+            targetSource = "Aimbot/Current";
+        }
+
+        const std::string stateText = std::string("Silent Aim: ") + (hotkeyActive ? "ACTIVE" : "IDLE") +
+            " | Patch: " + (silentMode ? "ON" : "OFF") +
+            " | Target: " + targetState;
+
+        std::string detailText = "Key held: ";
+        detailText += hotkeyActive ? "YES" : "NO";
+        detailText += " | Src: ";
+        detailText += targetSource;
+        if (hasTargetMetrics)
+        {
+            detailText += " | Dist: ";
+            detailText += std::to_string(static_cast<int>(std::sqrt(std::max(0.0f, worldDistanceSq))));
+            detailText += "m | Screen: ";
+            detailText += std::to_string(static_cast<int>(std::sqrt(std::max(0.0f, screenDistanceSq))));
+            detailText += "px";
+        }
+
+        constexpr float fontSize = 16.0f;
+        constexpr float lineHeight = 20.0f;
+        constexpr float boxHeight = 50.0f;
+        const float screenCenterX = ScreenWidth() * 0.5f;
+        const float stateWidth = static_cast<float>(stateText.size()) * fontSize * 0.56f;
+        const float detailWidth = static_cast<float>(detailText.size()) * 14.0f * 0.56f;
+        const float boxWidth = std::max(stateWidth, detailWidth) + 28.0f;
+        const float boxX = screenCenterX - (boxWidth * 0.5f);
+        constexpr float boxY = 52.0f;
+
+        const glm::vec4 fillColour = hotkeyActive
+            ? glm::vec4(0.18f, 0.12f, 0.02f, 0.92f)
+            : glm::vec4(0.08f, 0.08f, 0.08f, 0.88f);
+        const glm::vec4 borderColour = hotkeyActive
+            ? glm::vec4(1.0f, 0.65f, 0.18f, 1.0f)
+            : glm::vec4(0.55f, 0.55f, 0.55f, 1.0f);
+        const glm::vec4 stateColour = hotkeyActive
+            ? glm::vec4(1.0f, 0.82f, 0.45f, 1.0f)
+            : glm::vec4(0.82f, 0.82f, 0.82f, 1.0f);
+
+        g_DxWindow.DrawFilledRect(boxX, boxY, boxWidth, boxHeight, fillColour);
+        g_DxWindow.DrawRect(boxX, boxY, boxWidth, boxHeight, borderColour, 2.0f);
+        g_DxWindow.DrawString(stateText, screenCenterX, boxY + 5.0f, fontSize, stateColour, true, true);
+        g_DxWindow.DrawString(detailText, screenCenterX, boxY + 5.0f + lineHeight, 14.0f, glm::vec4(0.92f, 0.92f, 0.92f, 1.0f), true, true);
+    }
+
+
+    static inline void RenderTasks()
+    {
+        if (!espGlobals::drawQuestHelper)
+            return;
+
+        const std::string currentMapId = TrimEFT(mainGame.selectedLocation);
+
+        
+
+        const std::vector<QuestLocation>& locations = g_frameQuestSnapshot->masterLocations;
+
+        for (const auto& loc : locations)
+        {
+            const std::string mapName = TrimEFT(loc.mapNameId);
+
+            if (!(Utils::Text::containsIgnoreCase(mapName, currentMapId) ||
+                Utils::Text::containsIgnoreCase(currentMapId, mapName)))
+            {
+                continue;
+            }
+
+            const int distance = static_cast<int>(glm::distance(g_frameLocalLocation, loc.pos));
+            if (distance > espGlobals::drawQuestLootDist)
+                continue;
+
+            const glm::vec4 questColour = WithOpacityMultiplier(coloursGlobals::questMarker, espGlobals::getFuserDistanceOpacity(static_cast<float>(distance)));
+            if (questColour.a <= 0.001f)
+                continue;
+
+            if (loc.objectiveType != "visit" &&
+                loc.objectiveType != "plantItem" &&
+                loc.objectiveType != "plantQuestItem" &&
+                loc.objectiveType != "mark")
+            {
+                continue;
+            }
+
+            glm::vec2 screenPos{};
+            if (!ProjectWorldToScreen(loc.pos, &screenPos))
+                continue;
+
+            std::string questText = loc.questName;
+
+            if (loc.objectiveType == "plantItem" ||
+                loc.objectiveType == "plantQuestItem")
+                questText += " (PLANT)";
+            else if (loc.objectiveType == "mark")
+                questText += " (MARK)";
+
+            RenderStyledWorldMarker(MarkerCategory::Quest, screenPos, questText, questColour);
+        }
+    }
+
+   
+
+    static inline void RenderExfil()
+    {
+        const ExfilCacheCollection& exfilCache = *g_frameExfilSnapshot;
+
+        if (exfilCache.empty() || !espGlobals::drawExfil)
+            return;
+
+        for (const exfilsMemory& currentExfil : exfilCache)
+        {
+            if ((currentExfil.type == ExfilType::Secret && !espGlobals::drawSecretExfils) ||
+                (currentExfil.type == ExfilType::Transit && !espGlobals::drawTransitExfils))
+            {
+                continue;
+            }
+
+            if (currentExfil.type != ExfilType::Transit &&
+                !Utils::valid_pointer(currentExfil.instance))
+            {
+                continue;
+            }
+
+            if (!Utils::isGoodVec3(currentExfil.locationWorld))
+                continue;
+
+            const int distance = static_cast<int>(
+                glm::distance(
+                    g_frameLocalLocation,
+                    currentExfil.locationWorld
+                )
+                );
+
+            if (distance > espGlobals::drawExfilDist)
+                continue;
+
+            glm::vec2 screenPos{};
+
+            if (!ProjectWorldToScreen(
+                currentExfil.locationWorld,
+                &screenPos))
+            {
+                continue;
+            }
+
+            const std::string statusText =
+                currentExfil.type == ExfilType::Transit
+                ? "Transit"
+                : exfil.getExfilStatusText(currentExfil.statusRaw);
+
+            glm::vec4 statusColour = coloursGlobals::exfils;
+
+            if (currentExfil.type == ExfilType::Transit)
+            {
+                statusColour = glm::vec4(0.2f, 0.8f, 1.0f, 1.0f);
+            }
+            else if (currentExfil.type == ExfilType::Secret)
+            {
+                statusColour = glm::vec4(0.85f, 0.35f, 1.0f, 1.0f);
+            }
+            else
+            {
+                switch (currentExfil.statusRaw)
+                {
+                case 1: // Closed
+                    statusColour = glm::vec4(
+                        1.0f,
+                        0.2f,
+                        0.2f,
+                        1.0f
+                    );
+                    break;
+
+                case 4: // Open
+                    statusColour = glm::vec4(
+                        0.2f,
+                        1.0f,
+                        0.2f,
+                        1.0f
+                    );
+                    break;
+
+                case 2: // Req
+                case 3: // Countdown
+                case 5: // Pending
+                case 6: // Await. Manual
+                    statusColour = glm::vec4(
+                        1.0f,
+                        0.65f,
+                        0.0f,
+                        1.0f
+                    );
+                    break;
+
+                default:
+                    break;
+                }
+            }
+
+            statusColour = WithOpacityMultiplier(statusColour, espGlobals::getFuserDistanceOpacity(static_cast<float>(distance)));
+            if (statusColour.a <= 0.001f)
+                continue;
+
+            const std::string exfilText = currentExfil.extractName + " [" + statusText + "]" + " " + std::to_string(distance) + "m";
+
+            RenderStyledWorldMarker(MarkerCategory::Exfil, screenPos, exfilText, statusColour);
+        }
+    }
+
+    static inline void RenderNades()
+    {
+        if (!espGlobals::drawGrenades)
+            return;
+
+        const GrenadeCacheCollection& nadeCache = *g_frameGrenadeSnapshot;
+
+        if (nadeCache.empty())
+            return;
+
+        const float screenW = ScreenWidth();
+        const float screenH = ScreenHeight();
+
+        bool closeGrenade = false;
+
+        for (const GrenadeList& nade : nadeCache)
+        {
+            if (nade.type != ExplosiveType::Grenade)
+                continue;
+
+            if (!Utils::valid_pointer(nade.instance))
+                continue;
+
+            if (!Utils::isGoodVec3(nade.worldLocation))
+                continue;
+
+            const float distance =
+                glm::distance(
+                    g_frameLocalLocation,
+                    nade.worldLocation);
+
+            if (distance > espGlobals::drawGrenadesDist)
+                continue;
+
+            if (distance < 15.0f)
+                closeGrenade = true;
+
+            glm::vec2 screenPos{};
+
+            if (!ProjectWorldToScreen(
+                nade.worldLocation,
+                &screenPos))
+            {
+                continue;
+            }
+
+            RenderStyledWorldLabel(MarkerCategory::Grenade, glm::vec2(screenPos.x, screenPos.y + 3.0f), "NADE", coloursGlobals::grenades);
+        }
+
+        if (closeGrenade)
+        {
+            g_DxWindow.DrawString(
+                "!! WARNING: GRENADE NEAR YOU !!",
+                screenW * 0.5f,
+                screenH - 60.0f,
+                18.0f,
+                glm::vec4(1.0f, 0.0f, 0.0f, 1.0f),
+                true,
+                true);
+        }
+    }
+
+    static inline void RenderTripwires()
+    {
+        if (!espGlobals::drawTripwires)
+            return;
+
+        const GrenadeCacheCollection& explosiveCache = *g_frameGrenadeSnapshot;
+
+        if (explosiveCache.empty())
+            return;
+
+        for (const GrenadeList& tripwire : explosiveCache)
+        {
+            if (tripwire.type != ExplosiveType::Tripwire ||
+                !tripwire.isActive ||
+                !Utils::valid_pointer(tripwire.instance) ||
+                !Utils::isGoodVec3(tripwire.worldLocation) ||
+                !Utils::isGoodVec3(tripwire.fromWorldLocation))
+            {
+                continue;
+            }
+
+            const float distance = glm::distance(g_frameLocalLocation, tripwire.worldLocation);
+
+            if (distance > espGlobals::drawTripwiresDist)
+                continue;
+
+            const glm::vec4 tripwireColour = WithOpacityMultiplier(coloursGlobals::tripwires, espGlobals::getFuserDistanceOpacity(distance));
+            if (tripwireColour.a <= 0.001f)
+                continue;
+
+            glm::vec2 toScreen{};
+
+            if (!ProjectWorldToScreen(tripwire.worldLocation, &toScreen))
+                continue;
+
+            glm::vec2 fromScreen{};
+
+            if (ProjectWorldToScreen(tripwire.fromWorldLocation, &fromScreen))
+            {
+                g_DxWindow.DrawLine(
+                    fromScreen.x,
+                    fromScreen.y,
+                    toScreen.x,
+                    toScreen.y,
+                    tripwireColour,
+                    2.0f);
+            }
+
+            const std::string label = "TRIPWIRE " +
+                std::to_string(static_cast<int>(distance)) + "m";
+
+            RenderStyledWorldLabel(MarkerCategory::Tripwire, glm::vec2(toScreen.x, toScreen.y + 3.0f), label, tripwireColour);
+        }
+    }
+
+    static inline void DrawPlayerSkeleton(
+        const Player& player,
+        const std::vector<glm::vec2>& bones,
+        const std::vector<bool>& visibleBones,
+        const glm::vec4& colour)
+    {
+        auto drawBoneLine = [&](int a, int b)
+            {
+                if (a < 0 || b < 0)
+                    return;
+
+                const size_t firstBone = static_cast<size_t>(a);
+                const size_t secondBone = static_cast<size_t>(b);
+
+                if (firstBone >= bones.size() ||
+                    secondBone >= bones.size() ||
+                    firstBone >= player.bonePositions.size() ||
+                    secondBone >= player.bonePositions.size() ||
+                    firstBone >= visibleBones.size() ||
+                    secondBone >= visibleBones.size())
+                {
+                    return;
+                }
+
+                std::vector<CameraScreenSegment> segments;
+                if (g_frameManagedCameraSnapshot &&
+                    CameraManager::worldSegmentToScreen(
+                        *g_frameManagedCameraSnapshot,
+                        player.bonePositions[firstBone],
+                        player.bonePositions[secondBone],
+                        espGlobals::gameRes.x,
+                        espGlobals::gameRes.y,
+                        segments))
+                {
+                    for (const CameraScreenSegment& segment : segments)
+                    {
+                        g_DxWindow.DrawLine(
+                            segment.start.x,
+                            segment.start.y,
+                            segment.end.x,
+                            segment.end.y,
+                            colour,
+                            1.0f);
+                    }
+                    return;
+                }
+
+                if (!visibleBones[firstBone] || !visibleBones[secondBone])
+                    return;
+
+                g_DxWindow.DrawLine(
+                    bones[firstBone].x,
+                    bones[firstBone].y,
+                    bones[secondBone].x,
+                    bones[secondBone].y,
+                    colour,
+                    1.0f
+                );
+            };
+
+        drawBoneLine(boneListIndexes::Head, boneListIndexes::Pelvis);
+
+        drawBoneLine(boneListIndexes::Head, boneListIndexes::LForearm);
+        drawBoneLine(boneListIndexes::LForearm, boneListIndexes::LPalm);
+
+        drawBoneLine(boneListIndexes::Head, boneListIndexes::RForearm);
+        drawBoneLine(boneListIndexes::RForearm, boneListIndexes::RPalm);
+
+        drawBoneLine(boneListIndexes::Pelvis, boneListIndexes::LThigh);
+        drawBoneLine(boneListIndexes::LThigh, boneListIndexes::LFoot);
+
+        drawBoneLine(boneListIndexes::Pelvis, boneListIndexes::RThigh);
+        drawBoneLine(boneListIndexes::RThigh, boneListIndexes::RFoot);
+    }
+
+    static inline bool GetPlayerBoneScreenPositions(
+        const Player& player,
+        std::vector<glm::vec2>& outBones,
+        std::vector<bool>& outVisibleBones)
+    {
+        if (player.bonePositions.empty())
+            return false;
+
+        outBones.clear();
+        outBones.resize(player.bonePositions.size());
+        outVisibleBones.assign(player.bonePositions.size(), false);
+
+        size_t projectedBoneCount = 0;
+
+        for (size_t i = 0; i < player.bonePositions.size(); ++i)
+        {
+            glm::vec2 screenPos{};
+
+            if (!ProjectSkeletonWorldToScreen(player.bonePositions[i], &screenPos))
+                continue;
+
+            if (!std::isfinite(screenPos.x) || !std::isfinite(screenPos.y))
+                continue;
+
+            outBones[i] = screenPos;
+            outVisibleBones[i] = true;
+            ++projectedBoneCount;
+        }
+
+        return projectedBoneCount >= 2;
+    }
+
+    static inline bool HasBones(
+        const Player& player,
+        std::initializer_list<int> indexes)
+    {
+        const size_t count = player.bonePositions.size();
+
+        if (count == 0)
+            return false;
+
+        for (int index : indexes)
+        {
+            if (index < 0)
+                return false;
+
+            if (static_cast<size_t>(index) >= count)
+                return false;
+
+            const size_t boneIndex = static_cast<size_t>(index);
+            if (boneIndex >= player.bonePtrs.size() ||
+                !Utils::valid_pointer(player.bonePtrs[boneIndex]))
+            {
+                return false;
+            }
+
+            const glm::vec3& position = player.bonePositions[boneIndex];
+            if (!std::isfinite(position.x) ||
+                !std::isfinite(position.y) ||
+                !std::isfinite(position.z) ||
+                (std::fabs(position.x) < 0.001f &&
+                    std::fabs(position.y) < 0.001f &&
+                    std::fabs(position.z) < 0.001f))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    static inline void RenderAmmoHud()
+    {
+        const PlayerCollection& cache = *g_framePlayerSnapshot;
+
+        if (cache.empty())
+            return;
+
+        for (const auto& player : cache)
+        {
+            if (!player.isLocal)
+                continue;
+
+            const HandsInfo& handInfo = player.observedHandsInfo;
+
+            std::string ammoName = CleanText(handInfo.ammoName);
+            const int chamberCount = std::max(0, handInfo.chamberCount);
+            const int magazineCount = std::max(0, handInfo.magazineCount);
+
+            if (!handInfo.cachedIsWeapon || (ammoName.empty() && chamberCount == 0 && magazineCount == 0))
+                return;
+
+            if (ammoName.empty())
+                ammoName = "?";
+
+            std::string ammoText =
+                ammoName +
+                " (" +
+                std::to_string(chamberCount) +
+                "/" +
+                std::to_string(magazineCount) +
+                ")";
+
+            const float screenW = ScreenWidth();
+            const float screenH = ScreenHeight();
+
+            const float fontSize = 30.0f;
+            const float marginX = 30.0f;
+            const float marginY = 60.0f;
+
+            const float approxTextWidth =
+                static_cast<float>(ammoText.length()) * (fontSize * 0.55f);
+
+            const float x = screenW - approxTextWidth - marginX;
+            const float y = screenH - marginY;
+
+            g_DxWindow.DrawString(
+                ammoText,
+                x,
+                y,
+                fontSize,
+                glm::vec4(1.0f, 1.0f, 1.0f, 1.0f),
+                false,                              
+                true,                               
+                glm::vec4(0.0f, 0.0f, 0.0f, 1.0f)  
+            );
+
+            return;
+        }
+    }
+
+    static inline const Player* FindPassengerBtr(const Player& passenger, const PlayerCollection& players)
+    {
+        if (!passenger.isInBTR || passenger.isBTR || passenger.btrPassengerVehicle == 0)
+            return nullptr;
+
+        for (const Player& candidate : players)
+        {
+            if (!candidate.isBTR ||
+                candidate.isDead ||
+                candidate.hasExfiled ||
+                !Utils::valid_pointer(candidate.instance) ||
+                candidate.instance != passenger.btrPassengerVehicle)
+            {
+                continue;
+            }
+
+            return &candidate;
+        }
+
+        return nullptr;
+    }
+
+    static inline std::vector<glm::vec4> GetBtrPassengerColours(const Player& btr, const PlayerCollection& players, float opacityMultiplier)
+    {
+        std::vector<const Player*> passengers;
+        passengers.reserve(4);
+
+        for (const Player& player : players)
+        {
+            if (player.isDead ||
+                player.hasExfiled ||
+                !Utils::valid_pointer(player.instance) ||
+                FindPassengerBtr(player, players) != &btr)
+            {
+                continue;
+            }
+
+            passengers.push_back(&player);
+        }
+
+        std::sort(
+            passengers.begin(),
+            passengers.end(),
+            [](const Player* left, const Player* right)
+            {
+                return left->instance < right->instance;
+            });
+
+        std::vector<glm::vec4> colours;
+        colours.reserve(std::min<size_t>(4, passengers.size()));
+        for (size_t index = 0; index < passengers.size() && index < 4; ++index)
+        {
+            glm::vec4 colour = PlayerAppearance::resolveColour(*passengers[index]);
+            colour.a = std::clamp(colour.a * opacityMultiplier, 0.0f, 1.0f);
+            colours.push_back(colour);
+        }
+
+        return colours;
+    }
+
+    static inline void RenderFuserBtrMarker(const glm::vec2& screenPosition, const glm::vec4& colour, const std::vector<glm::vec4>& passengerColours)
+    {
+        const float centerX = screenPosition.x;
+        const float centerY = screenPosition.y;
+
+        g_DxWindow.DrawString(
+            "BTR",
+            centerX,
+            centerY - 18.0f,
+            13.0f,
+            colour,
+            true,
+            true);
+
+        const size_t passengerCount = std::min<size_t>(4, passengerColours.size());
+        const float passengerSpacing = 8.0f;
+        const float passengerStartX = centerX -
+            ((static_cast<float>(passengerCount) - 1.0f) * passengerSpacing * 0.5f);
+
+        for (size_t index = 0; index < passengerCount; ++index)
+        {
+            const float passengerX = passengerStartX +
+                (static_cast<float>(index) * passengerSpacing);
+            const float passengerY = centerY;
+            g_DxWindow.DrawFilledCircle(passengerX, passengerY, 3.5f, glm::vec4(0.0f, 0.0f, 0.0f, 0.96f * colour.a));
+            g_DxWindow.DrawFilledCircle(passengerX, passengerY, 2.4f, passengerColours[index]);
+        }
+    }
+
+    static inline void RenderPlayers()
+    {
+        
+            const PlayerCollection& cache = *g_framePlayerSnapshot;
+
+            if (cache.empty())
+                return;
+
+            for (const auto& player : cache)
+            {
+                if (!Utils::valid_pointer(player.instance) ||
+                    player.isZombie ||
+                    player.isLocal ||
+                    player.hasExfiled ||
+                    player.isDead)
+                {
+                    continue;
+                }
+
+                const float frameDistance = glm::distance(g_frameLocalLocation, player.location);
+
+                if (!std::isfinite(frameDistance) || (frameDistance <= 0.0f && !player.isBTR) ||
+                    frameDistance > static_cast<float>(espGlobals::getPlayerDrawDistance(player)))
+                    continue;
+
+                const int displayDistance = static_cast<int>(frameDistance);
+
+                if (FindPassengerBtr(player, cache) != nullptr)
+                    continue;
+
+                glm::vec2 screenPos{};
+                const bool rootVisible = ProjectWorldToScreen(
+                    player.location, &screenPos);
+
+                const float distanceOpacity = espGlobals::getFuserDistanceOpacity(frameDistance);
+                const glm::vec4 playerColour = WithOpacityMultiplier(PlayerAppearance::resolveColour(player), distanceOpacity);
+
+                if (playerColour.a <= 0.001f)
+                    continue;
+
+                if (player.isBTR)
+                {
+                    if (rootVisible)
+                    {
+                        RenderFuserBtrMarker(screenPos, playerColour,
+                            GetBtrPassengerColours(player, cache, distanceOpacity));
+                    }
+
+                    continue;
+                }
+
+                if (rootVisible)
+                {
+                    std::string cleanName = CleanText(player.name);
+
+                    std::string info =
+                        cleanName +
+                        " [" +
+                        std::to_string(displayDistance) +
+                        "m]";
+
+                    RenderStyledWorldLabel(MarkerCategory::Player, glm::vec2(screenPos.x, screenPos.y + 5.0f), info, playerColour);
+
+                    if (!player.isBTR)
+                    {
+                        float detailY = screenPos.y + 20.0f;
+
+                        if (espGlobals::drawHandItem)
+                        {
+                            const std::string itemName = CleanText(player.observedHandsInfo.itemName);
+                            const std::string ammoName = CleanText(player.observedHandsInfo.ammoName);
+
+                            if (!itemName.empty() || !ammoName.empty())
+                            {
+                                g_DxWindow.DrawString(
+                                    itemName + " (" + ammoName + "/" + std::to_string(player.observedHandsInfo.magazineCount) + ")",
+                                    screenPos.x,
+                                    detailY,
+                                    13.0f,
+                                    playerColour,
+                                    true,
+                                    true
+                                );
+                                detailY += 15.0f;
+                            }
+                        }
+
+                        if (espGlobals::drawPlayerEquip && radarGlobals::getPlayerEquip)
+                        {
+                            for (const auto& slot : player._slots)
+                            {
+                                const std::string slotName = TrimEFT(slot.name);
+
+                                if (!slot.wanted ||
+                                    slotName == "SecuredContainer" ||
+                                    (player.isPlayer && !player.isPlayerScav && !player.isAi &&
+                                        slotName == "Scabbard"))
+                                {
+                                    continue;
+                                }
+
+                                const std::string equipmentName = CleanText(slot.equipName);
+                                if (equipmentName.empty())
+                                    continue;
+
+                                g_DxWindow.DrawString(
+                                    equipmentName,
+                                    screenPos.x,
+                                    detailY,
+                                    13.0f,
+                                    playerColour,
+                                    true,
+                                    true
+                                );
+                                detailY += 15.0f;
+                            }
+                        }
+                    }
+                }
+
+                if (atlasVisibilityGlobals::enabled &&
+                    player.visibleToLocal &&
+                    HasBones(player, { boneListIndexes::Head }))
+                {
+                    glm::vec2 headPos{};
+
+                    if (ProjectWorldToScreen(
+                        player.bonePositions[boneListIndexes::Head],
+                        &headPos))
+                    {
+                        g_DxWindow.DrawString(
+                            "VISIBLE",
+                            headPos.x,
+                            headPos.y - 15.0f,
+                            12.0f,
+                            playerColour,
+                            true,
+                            true
+                        );
+                    }
+                }
+
+                if (player.isBTR)
+                    continue;
+
+                // ----------------------------
+                // Head dot
+                // ----------------------------
+                if (rootVisible &&
+                    espGlobals::drawHeadDot &&
+                    HasBones(player, { boneListIndexes::Head }))
+                {
+                    glm::vec2 headPos{};
+
+                    if (ProjectWorldToScreen(
+                        player.bonePositions[boneListIndexes::Head],
+                        &headPos))
+                    {
+                        if (screenPos.x != 0.0f && screenPos.y != 0.0f)
+                        {
+                            const float padding = 2.0f;
+                            const float height = screenPos.y - headPos.y + padding;
+                            float radius = (height / 12) * (espGlobals::headDotSize / 5);
+                            if (radius < 1.0f) radius = 1.0f;
+                            float verticalOffset = height / 20.0f;
+                            glm::vec2 circleCenter = { headPos.x, headPos.y - verticalOffset };
+                            g_DxWindow.DrawCircle(
+                                circleCenter.x,
+                                circleCenter.y,
+                                radius,
+                                playerColour,
+                                1.0f
+                            );
+
+                        }
+
+                    }
+                }
+
+                // ----------------------------
+                // Player box
+                // ----------------------------
+                if (rootVisible &&
+                    espGlobals::drawBoxPlayers &&
+                    HasBones(player, { boneListIndexes::Head }))
+                {
+                    glm::vec2 screenHead{};
+
+                    if (ProjectWorldToScreen(
+                        player.bonePositions[boneListIndexes::Head],
+                        &screenHead))
+                    {
+                        if (screenPos.x != 0.0f && screenPos.y != 0.0f)
+                        {
+                            const float padding = 2.0f;
+                            const float height = screenPos.y - screenHead.y + padding;
+                            const float width = (height / 2.0f) + padding;
+
+                            if (height > 4.0f && width > 2.0f)
+                            {
+                                const glm::vec2 boxStart =
+                                {
+                                    screenPos.x - width * 0.5f - padding,
+                                    screenPos.y - height
+                                };
+
+                                DrawCornerBox(
+                                    boxStart.x,
+                                    boxStart.y,
+                                    width,
+                                    height,
+                                    playerColour,
+                                    1.0f
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // ----------------------------
+                // Skeleton
+                // ----------------------------
+                if (espGlobals::drawSkeletons)
+                {
+                    if (!HasBones(player,
+                        {
+                            boneListIndexes::Head,
+                            boneListIndexes::Pelvis,
+                            boneListIndexes::LForearm,
+                            boneListIndexes::LPalm,
+                            boneListIndexes::RForearm,
+                            boneListIndexes::RPalm,
+                            boneListIndexes::LThigh,
+                            boneListIndexes::LFoot,
+                            boneListIndexes::RThigh,
+                            boneListIndexes::RFoot
+                        }))
+                    {
+                        continue;
+                    }
+
+                    std::vector<glm::vec2> boneScreenPositions;
+                    std::vector<bool> visibleBones;
+
+                    if (!GetPlayerBoneScreenPositions(player, boneScreenPositions, visibleBones))
+                        continue;
+
+                    DrawPlayerSkeleton(player, boneScreenPositions, visibleBones, playerColour);
+                }
+            }
+        
+    }
+
+    static inline void RenderLoot()
+    {
+        const LootCacheCollection& lootList = *g_frameLootSnapshot;
+
+        for (const auto& loot : lootList)
+        {
+            const bool isCorpse = loot.isCorpse();
+            const bool isQuestItem = loot.isQuestItem();
+            if (!espGlobals::drawLoot && !isCorpse)
+                continue;
+
+            if (loot.pendingResolve || loot.failed)
+                continue;
+
+            if (!loot.hasValidPosition)
+                continue;
+
+            if (!loot.wanted)
+                continue;
+
+            if (isCorpse && !espGlobals::drawCorpse)
+                continue;
+
+            const int distance = static_cast<int>(glm::distance(g_frameLocalLocation, loot.worldLocation));
+
+            const int maximumDistance = espGlobals::getLootDrawDistance(loot);
+
+            if (distance > maximumDistance)
+                continue;
+
+            glm::vec2 screenPos{};
+            if (!ProjectWorldToScreen(loot.worldLocation, &screenPos))
+                continue;
+
+            const float distanceOpacity = espGlobals::getFuserDistanceOpacity(static_cast<float>(distance));
+            const glm::vec4 lootColour = WithOpacityMultiplier(loot.isQuestItem() ? coloursGlobals::questMarker : loot.color, distanceOpacity);
+            if (lootColour.a <= 0.001f)
+                continue;
+
+            const std::string corpseOwnerName = isCorpse
+                ? CleanText(GetRenderableCorpseOwnerLabel(loot))
+                : "";
+            const bool corpseHasWantedEquipment =
+                isCorpse && loot.getCorpseState().hasWantedEquipment();
+
+            std::string lootText;
+            std::string corpseDetailText;
+
+            if (isCorpse)
+            {
+                lootText = "Corpse";
+
+                const std::string corpseValue = FormatLootPrice(loot.getCorpseValue());
+                if (!corpseValue.empty())
+                    lootText += " (" + corpseValue + ")";
+
+                if (!corpseOwnerName.empty())
+                    corpseDetailText = corpseOwnerName + " [" + std::to_string(distance) + "m]";
+                else
+                    corpseDetailText = "[" + std::to_string(distance) + "m]";
+            }
+            else
+            {
+                lootText =
+                    GetLootDisplayName(loot) +
+                    " " +
+                    std::to_string(distance) +
+                    "m";
+            }
+
+            const MarkerCategory lootCategory = isCorpse
+                ? MarkerCategory::Corpse
+                : (isQuestItem ? MarkerCategory::Quest : (loot.isContainer() ? MarkerCategory::Container : MarkerCategory::Loot));
+
+            if (corpseHasWantedEquipment)
+            {
+                g_DxWindow.DrawString(
+                    "*",
+                    screenPos.x + 2.0f,
+                    screenPos.y - 13.0f,
+                    11.0f,
+                    WithOpacityMultiplier(glm::vec4(0.96f, 0.75f, 0.30f, 1.0f), distanceOpacity),
+                    true,
+                    true
+                );
+            }
+
+            RenderStyledWorldMarker(lootCategory, screenPos, lootText, lootColour);
+
+            if (isCorpse)
+            {
+                const MarkerStyle corpseStyle = appearanceManager.GetStyle(MarkerCategory::Corpse);
+                const float detailY = screenPos.y + corpseStyle.fuser.size + 4.0f + corpseStyle.fuser.fontSize + 3.0f;
+                RenderStyledWorldLabel(MarkerCategory::Corpse, glm::vec2(screenPos.x, detailY), corpseDetailText, lootColour);
+            }
+        }
+    }
+
+    static inline void RenderLocalLookedAtAlert()
+    {
+        const int alertMode = std::clamp(espGlobals::aimOverlayAlert, 0, 2);
+
+        // The menu disables this selector with Extend aimlines. Keep the
+        // renderer aligned with it as well, so a stale frame snapshot cannot
+        // leave the edge alert visible after that feature is turned off.
+        if (!radarGlobals::drawAimLineTargets || alertMode == 0)
+            return;
+
+        const PlayerCollection& cache = *g_framePlayerSnapshot;
+
+        if (!AimLineTargeting::IsLocalBeingLookedAt(
+            cache,
+            alertMode == 2))
+        {
+            return;
+        }
+
+        constexpr float padding = 8.0f;
+        const float pulse = Wave01(NowSeconds() * 31.4159265359f);
+        const glm::vec4 warningColour =
+        {
+            1.0f,
+            0.38f,
+            0.0f,
+            0.30f + (pulse * 0.70f)
+        };
+
+        g_DxWindow.DrawRect(
+            padding,
+            padding,
+            ScreenWidth() - (padding * 2.0f),
+            ScreenHeight() - (padding * 2.0f),
+            warningColour,
+            2.0f);
+    }
+
+    static inline void RenderMainScene()
+    {
+        SafeRenderStage("RenderHUD", []()
+            {
+                RenderHUD();
+            });
+
+        SafeRenderStage("RenderAmmoHud", []()
+            {
+                RenderAmmoHud();
+            });
+
+        SafeRenderStage("RenderCrosshair", []()
+            {
+                RenderCrosshair();
+            });
+
+        SafeRenderStage("RenderFireportVisual", []()
+            {
+                RenderFireportVisual();
+            });
+
+        SafeRenderStage("RenderAimFovRing", []()
+            {
+                RenderAimFovRing();
+            });
+
+        SafeRenderStage("RenderSilentAimFovRing", []()
+            {
+                RenderSilentAimFovRing();
+            });
+
+        SafeRenderStage("RenderSilentAimLockLine", []()
+            {
+                RenderSilentAimLockLine();
+            });
+
+        SafeRenderStage("RenderSilentAimStatus", []()
+            {
+                RenderSilentAimStatus();
+            });
+
+        SafeRenderStage("RenderPlayers", []()
+            {
+                RenderPlayers();
+            });
+
+        SafeRenderStage("RenderNades", []()
+            {
+                RenderNades();
+            });
+
+        SafeRenderStage("RenderTripwires", []()
+            {
+                RenderTripwires();
+            });
+
+        SafeRenderStage("RenderLoot", []()
+            {
+                RenderLoot();
+            });
+
+        SafeRenderStage("RenderTasks", []()
+            {
+                RenderTasks();
+            });
+
+        SafeRenderStage("RenderExfils", []()
+            {
+                RenderExfil();
+            });
+
+        SafeRenderStage("RenderLocalLookedAtAlert", []()
+            {
+                RenderLocalLookedAtAlert();
+            });
+
+        SafeRenderStage("RenderRosterMismatchWarning", []()
+            {
+                RenderRosterMismatchWarning();
+            });
+    }
+
+    static inline bool HasActiveScene()
+    {
+        return IsTestSceneEnabled() || appGlobals::runRadar;
+    }
+
+    static inline bool Render()
+    {
+        CaptureFrameSnapshots();
+        g_DxWindow.BeginDrawList();
+
+        bool activeScene = false;
+
+        SafeRenderStage("RenderEntry", [&]()
+            {
+                if (IsTestSceneEnabled())
+                {
+                    SafeRenderStage("RenderTestScene", []()
+                        {
+                            RenderTestScene();
+                        });
+
+                    activeScene = true;
+                }
+                else if (appGlobals::runRadar.load(std::memory_order_acquire))
+                {
+                    RenderMainScene();
+                    activeScene = true;
+                }
+            });
+
+        g_DxWindow.SubmitDrawList();
+        ReleaseFrameSnapshots();
+
+        g_currentStage.store("Idle", std::memory_order_relaxed);
+
+        return activeScene;
+    }
+}
